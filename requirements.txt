@@ -2,3 +2,4 @@
    pandas
    ipykernel
    matplotlib
+   scikit-learn
