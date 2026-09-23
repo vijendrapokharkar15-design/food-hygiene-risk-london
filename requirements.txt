@@ -3,3 +3,4 @@
    ipykernel
    matplotlib
    scikit-learn
+   lightgbm
