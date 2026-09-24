@@ -50,6 +50,7 @@ def evaluate(name, data, score):
     return {
         "model": name,
         "recall@20%": recall_at_top(data, score),
+        "recall@10%": recall_at_top(data, score, top=0.1),
         "PR-AUC (within)": pr_auc_within(data, score),
         "PR-AUC (pooled)": average_precision_score(data[TARGET], score),
         "ROC-AUC (pooled)": roc_auc_score(data[TARGET], score),
