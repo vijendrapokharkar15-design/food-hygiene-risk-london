@@ -17,6 +17,7 @@ from features import CATEGORICAL, FEATURES, NUMERIC, TARGET
 
 SKEWED = ["name_count", "pop_density"]                   # long right tails: log first
 OTHER_NUMERIC = [c for c in NUMERIC if c not in SKEWED]
+DEPRIVATION = [c for c in NUMERIC if c.endswith("_rank")]  # the 8 IoD2025 ranks
 
 LGBM_DEFAULTS = dict(
     n_estimators=400,
@@ -38,11 +39,15 @@ def fit_predict_type(train, test):
 
 
 # --- Logistic regression -------------------------------------------------------
-def make_logreg():
+def make_logreg(use_deprivation=True):
+    """use_deprivation=False drops the 8 deprivation ranks (see the fairness check)."""
+    scaled = OTHER_NUMERIC if use_deprivation else [
+        c for c in OTHER_NUMERIC if c not in DEPRIVATION
+    ]
     preprocess = ColumnTransformer([
         ("categories", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL),
         ("log_scaled", make_pipeline(FunctionTransformer(np.log1p), StandardScaler()), SKEWED),
-        ("scaled", StandardScaler(), OTHER_NUMERIC),
+        ("scaled", StandardScaler(), scaled),
     ])
     return Pipeline([
         ("prep", preprocess),
@@ -50,8 +55,8 @@ def make_logreg():
     ])
 
 
-def fit_predict_logreg(train, test):
-    model = make_logreg().fit(train[FEATURES], train[TARGET])
+def fit_predict_logreg(train, test, use_deprivation=True):
+    model = make_logreg(use_deprivation).fit(train[FEATURES], train[TARGET])
     return model.predict_proba(test[FEATURES])[:, 1]
 
 
