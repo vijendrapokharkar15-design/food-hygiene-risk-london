@@ -36,7 +36,7 @@ MODELS = {
         ),
     },
 }
-VIEWS = ["Awaiting inspection only", "All businesses"]
+VIEWS = ["All businesses", "Awaiting inspection only"]
 TOP_SHARE = 0.2                      # the map shows the top 20% of the current list
 
 RATING_TEXT = {
@@ -78,13 +78,19 @@ view = st.sidebar.radio("Show", VIEWS)
 key = model["key"]
 in_borough = df[df["LocalAuthorityName"] == borough]
 awaiting = in_borough[in_borough["RatingValue"] == "AwaitingInspection"]
-shown = awaiting if view == VIEWS[0] else in_borough
+shown = in_borough if view == VIEWS[0] else awaiting
 shown = shown.sort_values(f"rank_{key}").copy()
 shown["priority"] = np.arange(1, len(shown) + 1)     # 1 = first to inspect in this list
 
 # --- Header and headline numbers -----------------------------------------------
 st.title("Food hygiene inspection priorities: London")
 st.caption(f"FSA data snapshot: {df['snapshot_date'].iloc[0]}  |  Borough: {borough}")
+st.info(
+    "Portfolio project using public Food Standards Agency data. Scores are model "
+    "estimates of inspection priority, not ratings or judgements about any business. "
+    "Business names and exact locations are deliberately not shown. Not affiliated "
+    "with the FSA or any local authority."
+)
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Businesses in borough", f"{len(in_borough):,}")
@@ -115,13 +121,13 @@ else:
     colours = LOW_COLOUR + np.outer(strength, HIGH_COLOUR - LOW_COLOUR)
     mappable["colour"] = colours.round().astype(int).tolist()
     mappable["reasons"] = mappable[f"reasons_up_{key}"].fillna("")
-    for col in ["BusinessName", "BusinessType", "address"]:
+    for col in ["BusinessType", "postcode_district"]:
         mappable[col] = mappable[col].astype(str)
 
     layer = pdk.Layer(
         "ScatterplotLayer",
         data=mappable[["longitude", "latitude", "colour", "priority",
-                       "BusinessName", "BusinessType", "address", "reasons"]],
+                       "BusinessType", "postcode_district", "reasons"]],
         get_position=["longitude", "latitude"],
         get_fill_color="colour",
         get_radius=30,
@@ -138,7 +144,7 @@ else:
         zoom=12,
     )
     tooltip = {
-        "html": "<b>#{priority} {BusinessName}</b><br/>{BusinessType}<br/>{address}"
+        "html": "<b>#{priority} {BusinessType}</b><br/>Area: {postcode_district}"
                 "<br/><br/><i>Why: {reasons}</i>",
         "style": {"fontSize": "12px", "maxWidth": "320px"},
     }
@@ -146,15 +152,13 @@ else:
         pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style=None),
         height=520,
     )
-    st.caption("Darker dots = higher priority. Hover over a dot for details.")
+    st.caption("Darker dots = higher priority. Hover over a dot for details. "
+               "Dot positions are rounded to about 100 m.")
 
 # --- Ranked table and download ----------------------------------------------------
 st.subheader(f"{view}: {len(shown):,} businesses, riskiest first")
 
-search = st.text_input("Search by business name", placeholder="e.g. Pret, Tesco, Kebab")
 listed = shown
-if search:
-    listed = shown[shown["BusinessName"].str.contains(search, case=False, na=False, regex=False)]
 
 
 def top_percent(pct):
@@ -164,9 +168,8 @@ def top_percent(pct):
 
 table = pd.DataFrame({
     "Priority": listed["priority"],
-    "Business": listed["BusinessName"].astype(str),
     "Type": listed["BusinessType"].astype(str),
-    "Address": listed["address"],
+    "Area": listed["postcode_district"].astype(str),
     "Current rating": listed["RatingValue"].astype(str).replace(RATING_TEXT),
     "Last inspected": pd.to_datetime(listed["RatingDate"], errors="coerce")
                         .dt.strftime("%d %b %Y").where(listed["is_rated"], "").fillna(""),

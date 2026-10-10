@@ -4,6 +4,11 @@ Export a slim copy of the latest scored file for the dashboard.
 The full data/ folder is not committed to Git, so the deployed dashboard reads
 this small Parquet file instead. It holds only public FSA data plus our scores.
 
+Privacy: the public file holds no business names, addresses or FHRS IDs.
+Location is kept only as the postcode district (e.g. "E14") and coordinates
+rounded to 3 decimal places (about 100 m), so no prediction can be tied to a
+named business.
+
 Run from the project root (after train_and_score.py):
     python src/export_dashboard_data.py
 """
@@ -14,20 +19,21 @@ from enrich_postcodes import PROJECT_ROOT
 from features import PROCESSED_DIR
 
 APP_DATA = PROJECT_ROOT / "app" / "data" / "scored.parquet"
-ADDRESS_PARTS = ["AddressLine1", "AddressLine2", "AddressLine3", "AddressLine4", "PostCode"]
 KEEP = [
-    "FHRSID", "BusinessName", "BusinessType", "address", "LocalAuthorityName",
+    "BusinessType", "postcode_district", "LocalAuthorityName",
     "latitude", "longitude", "RatingValue", "RatingDate", "is_rated",
     "rank_default", "risk_pct_default", "reasons_up_default", "reasons_down_default",
     "rank_nodep", "risk_pct_nodep", "reasons_up_nodep", "reasons_down_nodep",
 ]
-CATEGORY_COLUMNS = ["BusinessType", "LocalAuthorityName", "RatingValue"]
+CATEGORY_COLUMNS = ["BusinessType", "postcode_district", "LocalAuthorityName", "RatingValue"]
+COORD_DECIMALS = 3                    # 3 decimal places = roughly a 100 m grid
 
 
-def join_address(row):
-    """'1 High St', NaN, 'London', 'W3 7AA' -> '1 High St, London, W3 7AA'."""
-    parts = [str(v).strip() for v in row if pd.notna(v) and str(v).strip()]
-    return ", ".join(parts)
+def postcode_district(postcode):
+    """'E14 7AA' -> 'E14'. Missing (withheld address) -> 'Withheld'."""
+    if pd.isna(postcode) or not str(postcode).strip():
+        return "Withheld"
+    return str(postcode).strip().upper().split()[0]
 
 
 def main():
@@ -36,8 +42,10 @@ def main():
     print(f"Reading {scored_file.name}")
 
     df = pd.read_csv(scored_file, low_memory=False, dtype={"RatingValue": str})
-    df["address"] = df[[c for c in ADDRESS_PARTS if c in df.columns]].apply(join_address, axis=1)
-    df = df[KEEP].copy()
+    df["postcode_district"] = df["PostCode"].map(postcode_district)
+    df["latitude"] = df["latitude"].round(COORD_DECIMALS)
+    df["longitude"] = df["longitude"].round(COORD_DECIMALS)
+    df = df[KEEP].copy()                      # names, addresses and IDs are dropped here
 
     for col in CATEGORY_COLUMNS:              # repeated text -> much smaller file
         df[col] = df[col].astype("category")
