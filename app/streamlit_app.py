@@ -37,6 +37,7 @@ MODELS = {
 }
 VIEWS = ["All businesses", "Awaiting inspection only"]
 MIN_GROUP = 10                       # districts and business types with fewer are hidden
+MIN_RATED = 30                       # fewer rated businesses than this = too few to compare
 FAIL_RATINGS = ["0", "1", "2"]
 
 # Priority bands, from each business's percentile within its borough
@@ -195,20 +196,34 @@ summary = (
          failed=("failed", "sum"))
     .reset_index()
 )
+# Shares are of the whole borough, worked out before small types are hidden
+summary["high_share"] = summary["high"] / max(summary["high"].sum(), 1)
+summary["fail_share"] = summary["failed"] / max(summary["failed"].sum(), 1)
 summary = summary[summary["businesses"] >= MIN_GROUP].sort_values("high", ascending=False)
+
+
+def fail_share_text(row):
+    """Only compare where enough businesses of this type have been inspected."""
+    if row["rated"] < MIN_RATED:
+        return "Too few inspected"
+    return f"{row['fail_share']:.0%}"
+
+
 summary_table = pd.DataFrame({
     "Business type": summary["BusinessType"].astype(str),
     "Businesses": summary["businesses"],
     "High priority": summary["high"],
-    "Share in High band": (summary["high"] / summary["businesses"]).map("{:.0%}".format),
-    "Actual failure rate (rated 0-2)": (summary["failed"] / summary["rated"].where(summary["rated"] > 0))
-                                       .map(lambda v: "" if pd.isna(v) else f"{v:.0%}"),
+    "Share of High band": summary["high_share"].map("{:.0%}".format),
+    "Share of failures": summary.apply(fail_share_text, axis=1),
 })
 st.dataframe(summary_table, width="stretch", hide_index=True)
 st.caption(
-    "Actual failure rate is the share of already-inspected businesses of that type rated "
-    f"0, 1 or 2. Compare it with the share in the High band to see where the model "
-    f"over- or under-flags a type. Types with fewer than {MIN_GROUP} businesses are not shown."
+    "Share of High band: this type's share of the borough's High-priority businesses. "
+    "Share of failures: its share of the borough's inspected businesses rated 0, 1 or 2. "
+    "If the first is much bigger, the model gives this type more attention than its "
+    "failures justify; if smaller, less. Types with fewer than "
+    f"{MIN_GROUP} businesses are hidden, and failure shares need at least {MIN_RATED} "
+    "inspected businesses."
 )
 
 # --- Ranked table and download ----------------------------------------------------

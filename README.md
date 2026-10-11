@@ -4,7 +4,7 @@ Ranking London's 81,572 food businesses by their risk of failing a hygiene inspe
 
 **Live dashboard:** https://london-food-hygiene-risk.streamlit.app/
 
-Pick a borough and a model, and the dashboard shows a ranked inspection list, a map of the top 20%, the reasons each business ranks where it does, and a CSV download for fieldwork.
+Pick a borough and a model, and the dashboard shows a ranked inspection list with High, Medium and Low priority bands, a map of priority by postcode district, a summary by business type, and the reasons behind each ranking. It never shows business names or exact locations (see [Responsible use](#responsible-use)).
 
 ---
 
@@ -91,13 +91,39 @@ Removing the deprivation features makes inspections track failures almost exactl
 
 That leaves a policy trade-off (about 6% fewer failures found, against proportional coverage of every neighbourhood) rather than a technical question, and a council should make it. The dashboard therefore uses the standard model by default and offers the alternative as a toggle, with the trade-off stated next to it.
 
-One limit applies to both models: failures are recorded by human inspectors, so any bias in how areas are rated is learned by the model and cannot be measured from this data.
+### By business type
+
+I ran the same check on business type: each type's share of the High band (the top 20% in each borough) against its share of failures. These figures cover the full scored snapshot, so they include training rows and are descriptive rather than a test result.
+
+| Business type | Share of failures | High band (standard model) | High band (without deprivation) |
+|---|---|---|---|
+| Retailers - other | 30.9% | **53.8%** | **62.2%** |
+| Takeaway/sandwich shop | 16.7% | 23.0% | 25.3% |
+| Restaurant/Cafe/Canteen | 37.5% | **22.2%** | **12.4%** |
+
+Both models send too many inspections to "Retailers - other" and too few to restaurants, which hold the largest share of failures. Retailers do have the highest failure rate of any large category (9.1%), so ranking them first is not wrong in itself. The problem is that taking the top 20% turns a modest difference in rates into a large difference in attention, the same effect seen with deprivation.
+
+Removing deprivation makes this worse. Without area features, the model leans harder on business type, and restaurants drop to 12.4% of the High band. So neither model is fair on both measures: one over-targets deprived areas, the other over-targets one business category. The dashboard shows this comparison for each borough, and the fix I would try first is splitting "Retailers - other" using keywords from business names (see Limitations).
+
+One limit applies to all of this: failures are recorded by human inspectors, so any bias in how areas are rated is learned by the model and cannot be measured from this data.
+
+## Responsible use
+
+The model scores real, named businesses, including 7,457 that have never been inspected. Publishing "this new takeaway is likely to fail" could harm a business that has done nothing wrong, so the public dashboard is built to show priorities without pointing at anyone.
+
+- **No identities.** The published data file has no business names, addresses, FHRS IDs or per-business coordinates. The map shows one circle per postcode district (for example W2), placed at the average location of that district's businesses.
+- **No exact dates.** Hiding names is not enough on its own. Business type, postcode district, rating and the exact inspection date together are unique for 85% of rated businesses, and all four are on the public FSA website, so a row could be matched back to a name. Showing only the year of inspection cuts this to 14%.
+- **Small groups hidden.** Districts and business types with fewer than 10 businesses are left off the map and summary table. Failure shares are only shown where at least 30 businesses of a type have been inspected.
+- **Bands, not verdicts.** Businesses are shown as High (top 20% in the borough), Medium (next 30%) or Low priority. A band is a suggestion about inspection order. Most High-priority businesses will pass, and the bands mean nothing outside their own borough.
+- **Clean history.** An earlier version of the data file included business names. I removed it from the whole Git history, not just the latest commit.
+
+This is a portfolio project, not affiliated with the FSA or any council. A council using something like it would need its own data protection review, and would see the named list internally rather than on a public site.
 
 ## Limitations and next steps
 
-- **Coarse categories.** "Retailers - other" puts grocers and butchers alongside pharmacies and a toy library, both of which appear near the top of Westminster's list. Keyword features from business names ("butcher", "chemist", "library") are the clearest next improvement.
+- **Coarse categories.** "Retailers - other" puts grocers and butchers alongside pharmacies and a toy library, both of which appear near the top of Westminster's list. It fills over half of the High band while holding under a third of failures (see Fairness). Keyword features from business names ("butcher", "chemist", "library") are the clearest next improvement.
 - **One snapshot.** The FSA API only gives current ratings. Pulling a second snapshot a few months later would show which businesses were re-inspected and allow validation on genuinely future inspections.
-- **Scores are for ranking only.** Class weighting pushes predicted probabilities up, so the dashboard shows ranks and percentiles rather than a "chance of failing". Calibration would be needed before showing probabilities.
+- **Scores are for ranking only.** Class weighting pushes predicted probabilities up, so the dashboard shows ranks and priority bands rather than a "chance of failing". Calibration would be needed before showing probabilities.
 - **Top of the list.** LightGBM showed a small but steady edge in the top 10%. If councils' real capacity is nearer 10% than 20%, that deserves its own pre-registered test.
 - **Chain detection** misses national chains with few London outlets and does not separate franchises from company-run chains.
 
@@ -132,7 +158,7 @@ food-hygiene-risk-london/
 ├── app/
 │   ├── streamlit_app.py          dashboard
 │   ├── requirements.txt          slim requirements for Streamlit Cloud
-│   └── data/scored.parquet       scored businesses (public data only)
+│   └── data/scored.parquet       scored businesses (anonymised, see Responsible use)
 ├── notebooks/
 │   ├── 01_api_exploration.ipynb
 │   ├── 02_postcode_exploration.ipynb
