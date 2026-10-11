@@ -36,7 +36,8 @@ MODELS = {
     },
 }
 VIEWS = ["All businesses", "Awaiting inspection only"]
-TOP_SHARE = 0.2                      # the map shows the top 20% of the current list
+MIN_GROUP = 10                       # districts and business types with fewer are hidden
+FAIL_RATINGS = ["0", "1", "2"]
 
 # Priority bands, from each business's percentile within its borough
 # (1.0 = highest priority). High matches the top 20% behind the headline figure.
@@ -51,7 +52,7 @@ RATING_TEXT = {
     "Exempt": "Exempt",
 }
 
-# Map dot colours: one orange hue, light (lower priority) to dark (highest)
+# Map colours: one orange hue, light (few High-priority businesses) to dark (many)
 LOW_COLOUR = np.array([246, 173, 125])
 HIGH_COLOUR = np.array([176, 58, 12])
 
@@ -80,6 +81,15 @@ st.sidebar.caption(model["note"])
 
 view = st.sidebar.radio("Show", VIEWS)
 
+def priority_band(pct):
+    """Within-borough percentile -> 'High' (top 20%), 'Medium' (next 30%) or 'Low'."""
+    if pct >= HIGH_CUTOFF:
+        return "High"
+    if pct >= MEDIUM_CUTOFF:
+        return "Medium"
+    return "Low"
+
+
 # --- Filter to the chosen borough and view, highest priority first ---------------------
 key = model["key"]
 in_borough = df[df["LocalAuthorityName"] == borough]
@@ -87,6 +97,7 @@ awaiting = in_borough[in_borough["RatingValue"] == "AwaitingInspection"]
 shown = in_borough if view == VIEWS[0] else awaiting
 shown = shown.sort_values(f"rank_{key}").copy()
 shown["priority"] = np.arange(1, len(shown) + 1)     # 1 = first to inspect in this list
+shown["band"] = shown[f"risk_pct_{key}"].map(priority_band)
 
 # --- Header and headline numbers -----------------------------------------------
 st.title("Food hygiene inspection priorities: London")
@@ -94,8 +105,8 @@ st.caption(f"FSA data snapshot: {df['snapshot_date'].iloc[0]}  |  Borough: {boro
 st.info(
     "Portfolio project using public Food Standards Agency data. Scores are model "
     "estimates of inspection priority, not ratings or judgements about any business. "
-    "Business names and exact locations are deliberately not shown. Not affiliated "
-    "with the FSA or any local authority."
+    "Business names, exact locations and exact inspection dates are deliberately not "
+    "shown. Not affiliated with the FSA or any local authority."
 )
 
 col1, col2, col3 = st.columns(3)
@@ -108,71 +119,100 @@ col3.metric(
          "cross-validation; the locked test set gave 39% for the standard model.",
 )
 
-# --- Map: the top 20% of the current list ---------------------------------------
-top_n = int(np.ceil(TOP_SHARE * len(shown)))
-top = shown.head(top_n)
-mappable = top.dropna(subset=["latitude", "longitude"]).copy()
+# --- Map: postcode districts, never individual businesses ----------------------------
+st.subheader("Map: High-priority share by postcode district")
 
-st.subheader(f"Map: top 20% of this list ({top_n:,} businesses)")
-not_mapped = top_n - len(mappable)
-if not_mapped:
-    st.caption(f"{not_mapped:,} of these have a withheld address, so they appear in the "
-               "list below but not on the map.")
+districts = (
+    shown[shown["postcode_district"] != "Withheld"]
+    .groupby("postcode_district", observed=True)
+    .agg(businesses=("band", "size"),
+         high=("band", lambda b: (b == "High").sum()),
+         latitude=("district_lat", "first"),
+         longitude=("district_lon", "first"))
+    .reset_index()
+    .dropna(subset=["latitude", "longitude"])
+)
+hidden = (districts["businesses"] < MIN_GROUP).sum()
+districts = districts[districts["businesses"] >= MIN_GROUP].copy()
 
-if mappable.empty:
-    st.info("None of these businesses have a published location.")
+if districts.empty:
+    st.info(f"Every postcode district in this list has fewer than {MIN_GROUP} businesses, "
+            "so none are mapped. Switch to 'All businesses' to see the map.")
 else:
-    # 0 = lowest priority on the map, 1 = highest -> interpolate the colour
-    strength = 1 - (mappable["priority"] - 1) / max(len(top) - 1, 1)
+    districts["share"] = districts["high"] / districts["businesses"]
+    districts["share_text"] = (districts["share"] * 100).round().astype(int).astype(str) + "%"
+    districts["postcode_district"] = districts["postcode_district"].astype(str)
+    # Darkest colour at 50% High or more (the borough average is 20%)
+    strength = (districts["share"] / 0.5).clip(0, 1)
     colours = LOW_COLOUR + np.outer(strength, HIGH_COLOUR - LOW_COLOUR)
-    mappable["colour"] = colours.round().astype(int).tolist()
-    mappable["reasons"] = mappable[f"reasons_up_{key}"].fillna("")
-    for col in ["BusinessType", "postcode_district"]:
-        mappable[col] = mappable[col].astype(str)
+    districts["colour"] = colours.round().astype(int).tolist()
+    districts["radius"] = 12 * np.sqrt(districts["businesses"])   # area grows with count
 
     layer = pdk.Layer(
         "ScatterplotLayer",
-        data=mappable[["longitude", "latitude", "colour", "priority",
-                       "BusinessType", "postcode_district", "reasons"]],
+        data=districts[["longitude", "latitude", "colour", "radius", "postcode_district",
+                        "businesses", "high", "share_text"]],
         get_position=["longitude", "latitude"],
         get_fill_color="colour",
-        get_radius=30,
-        radius_min_pixels=4,
-        radius_max_pixels=10,
+        get_radius="radius",
+        opacity=0.6,
         stroked=True,
         get_line_color=[255, 255, 255, 180],
         line_width_min_pixels=1,
         pickable=True,
     )
     view_state = pdk.ViewState(
-        latitude=mappable["latitude"].median(),
-        longitude=mappable["longitude"].median(),
+        latitude=districts["latitude"].median(),
+        longitude=districts["longitude"].median(),
         zoom=12,
     )
     tooltip = {
-        "html": "<b>#{priority} {BusinessType}</b><br/>Area: {postcode_district}"
-                "<br/><br/><i>Why: {reasons}</i>",
-        "style": {"fontSize": "12px", "maxWidth": "320px"},
+        "html": "<b>{postcode_district}</b><br/>{businesses} businesses<br/>"
+                "High priority: {high} ({share_text})",
+        "style": {"fontSize": "12px"},
     }
     st.pydeck_chart(
         pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style=None),
         height=520,
     )
-    st.caption("Darker dots = higher priority. Hover over a dot for details. "
-               "Dot positions are rounded to about 100 m.")
+    note = (f" {hidden} district(s) with fewer than {MIN_GROUP} businesses are not shown."
+            if hidden else "")
+    st.caption("One circle per postcode district. Bigger = more businesses, darker = larger "
+               "share in the High band (borough average 20%). Hover for details." + note)
+
+# --- Summary by business type ----------------------------------------------------------
+st.subheader(f"By business type: {borough}")
+
+by_type = in_borough.assign(
+    band=in_borough[f"risk_pct_{key}"].map(priority_band),
+    failed=in_borough["RatingValue"].isin(FAIL_RATINGS),
+)
+summary = (
+    by_type.groupby("BusinessType", observed=True)
+    .agg(businesses=("band", "size"),
+         high=("band", lambda b: (b == "High").sum()),
+         rated=("is_rated", "sum"),
+         failed=("failed", "sum"))
+    .reset_index()
+)
+summary = summary[summary["businesses"] >= MIN_GROUP].sort_values("high", ascending=False)
+summary_table = pd.DataFrame({
+    "Business type": summary["BusinessType"].astype(str),
+    "Businesses": summary["businesses"],
+    "High priority": summary["high"],
+    "Share in High band": (summary["high"] / summary["businesses"]).map("{:.0%}".format),
+    "Actual failure rate (rated 0-2)": (summary["failed"] / summary["rated"].where(summary["rated"] > 0))
+                                       .map(lambda v: "" if pd.isna(v) else f"{v:.0%}"),
+})
+st.dataframe(summary_table, width="stretch", hide_index=True)
+st.caption(
+    "Actual failure rate is the share of already-inspected businesses of that type rated "
+    f"0, 1 or 2. Compare it with the share in the High band to see where the model "
+    f"over- or under-flags a type. Types with fewer than {MIN_GROUP} businesses are not shown."
+)
 
 # --- Ranked table and download ----------------------------------------------------
-def priority_band(pct):
-    """Within-borough percentile -> 'High' (top 20%), 'Medium' (next 30%) or 'Low'."""
-    if pct >= HIGH_CUTOFF:
-        return "High"
-    if pct >= MEDIUM_CUTOFF:
-        return "Medium"
-    return "Low"
-
-
 listed = shown
-listed["band"] = listed[f"risk_pct_{key}"].map(priority_band)
 
 st.subheader(f"{view}: {len(listed):,} businesses, highest priority first")
 
@@ -199,8 +239,8 @@ table = pd.DataFrame({
     "Type": listed["BusinessType"].astype(str),
     "Area": listed["postcode_district"].astype(str),
     "Current rating": listed["RatingValue"].astype(str).replace(RATING_TEXT),
-    "Last inspected": pd.to_datetime(listed["RatingDate"], errors="coerce")
-                        .dt.strftime("%d %b %Y").where(listed["is_rated"], "").fillna(""),
+    "Last inspected (year)": listed["inspected_year"].astype("string")
+                               .where(listed["is_rated"], "").fillna(""),
     "Priority band": listed["band"],
     "Why it's prioritised": listed[f"reasons_up_{key}"].fillna(""),
     "Lowers its priority": listed[f"reasons_down_{key}"].fillna(""),
