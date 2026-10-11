@@ -5,7 +5,6 @@ Run from the project root:
     streamlit run app/streamlit_app.py
 """
 
-import math
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +37,13 @@ MODELS = {
 }
 VIEWS = ["All businesses", "Awaiting inspection only"]
 TOP_SHARE = 0.2                      # the map shows the top 20% of the current list
+
+# Priority bands, from each business's percentile within its borough
+# (1.0 = highest priority). High matches the top 20% behind the headline figure.
+BANDS = ["High", "Medium", "Low"]
+HIGH_CUTOFF = 0.8                    # top 20%
+MEDIUM_CUTOFF = 0.5                  # next 30%; the bottom 50% is Low
+MIXED_CATEGORY = "Retailers - other"
 
 RATING_TEXT = {
     "AwaitingInspection": "Awaiting inspection",
@@ -74,7 +80,7 @@ st.sidebar.caption(model["note"])
 
 view = st.sidebar.radio("Show", VIEWS)
 
-# --- Filter to the chosen borough and view, riskiest first ---------------------
+# --- Filter to the chosen borough and view, highest priority first ---------------------
 key = model["key"]
 in_borough = df[df["LocalAuthorityName"] == borough]
 awaiting = in_borough[in_borough["RatingValue"] == "AwaitingInspection"]
@@ -98,7 +104,7 @@ col2.metric("Awaiting first inspection", f"{len(awaiting):,}")
 col3.metric(
     "Failures found by inspecting the top 20%", model["recall"],
     help="Share of failing businesses (rated 0-2) found when each borough inspects "
-         "the riskiest 20% of its list. Random selection finds 20%. Measured by "
+         "the highest-priority 20% of its list. Random selection finds 20%. Measured by "
          "cross-validation; the locked test set gave 39% for the standard model.",
 )
 
@@ -156,14 +162,36 @@ else:
                "Dot positions are rounded to about 100 m.")
 
 # --- Ranked table and download ----------------------------------------------------
-st.subheader(f"{view}: {len(shown):,} businesses, riskiest first")
+def priority_band(pct):
+    """Within-borough percentile -> 'High' (top 20%), 'Medium' (next 30%) or 'Low'."""
+    if pct >= HIGH_CUTOFF:
+        return "High"
+    if pct >= MEDIUM_CUTOFF:
+        return "Medium"
+    return "Low"
+
 
 listed = shown
+listed["band"] = listed[f"risk_pct_{key}"].map(priority_band)
 
+st.subheader(f"{view}: {len(listed):,} businesses, highest priority first")
 
-def top_percent(pct):
-    """0.987 (riskier than 98.7% of the borough) -> 'Top 2%'."""
-    return f"Top {max(1, math.ceil((1 - pct) * 100))}%"
+counts = listed["band"].value_counts()
+st.caption(
+    "  |  ".join(f"{band} priority: {counts.get(band, 0):,}" for band in BANDS)
+    + "  (High = top 20% in the borough, Medium = next 30%, Low = bottom 50%)"
+)
+
+# The FSA's "Retailers - other" category mixes grocers with pharmacies and other
+# low-risk shops, and it fills a large part of the High band. Say so for this borough.
+high = in_borough[in_borough[f"risk_pct_{key}"] >= HIGH_CUTOFF]
+mixed_share = (high["BusinessType"] == MIXED_CATEGORY).mean() if len(high) else 0
+if mixed_share >= 0.1:
+    st.warning(
+        f"{mixed_share:.0%} of High-priority businesses in {borough} are "
+        f"'{MIXED_CATEGORY}', an FSA category that mixes grocers with pharmacies and "
+        "other low-risk shops. Treat these with extra caution."
+    )
 
 
 table = pd.DataFrame({
@@ -173,9 +201,9 @@ table = pd.DataFrame({
     "Current rating": listed["RatingValue"].astype(str).replace(RATING_TEXT),
     "Last inspected": pd.to_datetime(listed["RatingDate"], errors="coerce")
                         .dt.strftime("%d %b %Y").where(listed["is_rated"], "").fillna(""),
-    "Risk in borough": listed[f"risk_pct_{key}"].map(top_percent),
-    "Why it ranks high": listed[f"reasons_up_{key}"].fillna(""),
-    "Lowers its risk": listed[f"reasons_down_{key}"].fillna(""),
+    "Priority band": listed["band"],
+    "Why it's prioritised": listed[f"reasons_up_{key}"].fillna(""),
+    "Lowers its priority": listed[f"reasons_down_{key}"].fillna(""),
 })
 
 st.dataframe(table, width="stretch", height=480, hide_index=True)
@@ -191,21 +219,26 @@ st.download_button(
 with st.expander("About this tool and its limits"):
     st.markdown(
         """
-**What it does.** Ranks food businesses within each London borough by their risk of
-receiving a food hygiene rating of 0, 1 or 2, so inspectors can visit the riskiest first.
+**What it does.** Ranks food businesses within each London borough by inspection priority:
+how likely the model thinks a business is to receive a food hygiene rating of 0, 1 or 2.
+The aim is to help inspectors decide where to look first.
+
+**Priority bands.** High = top 20% of the borough, Medium = next 30%, Low = bottom 50%.
+A band is a suggestion about inspection order, not a rating or judgement of the business.
 
 **What it uses.** Only information known *before* an inspection: business type, whether it
 is part of a chain, whether its address is withheld (usually home-based), population density
 and (standard model only) area deprivation (English Indices of Deprivation 2025). Past
 ratings and inspection scores are never used as inputs.
 
-**How well it works.** On businesses the model never saw, inspecting the top 20% of each
-borough's list found about 39-41% of failing businesses, roughly double random selection.
+**How well it works.** On businesses the model never saw, inspecting the High band (top 20%)
+of each borough's list found about 39-41% of failing businesses, roughly double random selection.
 
 **Limits.**
 - A ranking, not a verdict. Most high-priority businesses will pass their inspection.
 - The FSA category "Retailers - other" mixes grocers and butchers with pharmacies and
-  toy libraries, so some high-ranked retailers are low risk in reality.
+  toy libraries. It makes up over half of the High band across London, so many
+  High-priority retailers are low risk in reality.
 - Councils rate with different strictness, so rankings are only meaningful within a borough.
 - The standard model sends noticeably more inspections to deprived neighbourhoods than
   their share of failures. The alternative model avoids this at a small cost in accuracy.
